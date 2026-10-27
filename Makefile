@@ -3,7 +3,7 @@
 #   make install    copy dist/ to the Amiberry shared drive
 TOOLCHAIN ?= $(HOME)/Projects/amiga-toolchain
 CC := $(TOOLCHAIN)/bin/m68k-amigaos-gcc
-CFLAGS := -Os -m68020 -Wall -Wextra -Wno-unused-parameter -Wno-pointer-sign -fomit-frame-pointer
+CFLAGS := -Os -m68020 -fno-common -Wall -Wextra -Wno-unused-parameter -Wno-pointer-sign -fomit-frame-pointer
 LDFLAGS := -s -noixemul
 INSTALL_DIR ?= $(HOME)/Amiberry/HardDrives/Shared/Diary
 
