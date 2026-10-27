@@ -5,7 +5,7 @@
  * the selected day's text on the right. Entries are plain text files named
  * YYYY-MM-DD in a "Diary Entries" drawer next to the program.
  *
- * Uses ReAction (window, layout, button, listbrowser, scroller, space and
+ * Uses ReAction (window, layout, button, listbrowser, scroller and
  * texteditor classes) as shipped with AmigaOS 3.2.
  */
 
@@ -26,7 +26,6 @@
 #include <gadgets/button.h>
 #include <gadgets/listbrowser.h>
 #include <gadgets/scroller.h>
-#include <gadgets/space.h>
 #include <gadgets/texteditor.h>
 #include <images/bevel.h>
 
@@ -41,7 +40,6 @@
 #include <proto/button.h>
 #include <proto/listbrowser.h>
 #include <proto/scroller.h>
-#include <proto/space.h>
 #include <proto/texteditor.h>
 #include <proto/requester.h>
 #include <clib/alib_protos.h>
@@ -55,8 +53,9 @@ static const char kVersion[] __attribute__((used)) = "$VER: Diary 1.0 (27.10.202
 #define kMaxSearch      100     /* GM_TEXTEDITOR_Search allows up to 120 */
 
 enum {
-    GID_CALENDAR = 1, GID_LIST, GID_PREV, GID_TODAY, GID_NEXT, GID_DATE,
-    GID_EDITOR, GID_SCROLLER
+    GID_LIST = 1, GID_PREV, GID_TODAY, GID_NEXT, GID_DATE,
+    GID_EDITOR, GID_SCROLLER, GID_CALPREV, GID_CALNEXT, GID_MONTH,
+    GID_DAY0            /* GID_DAY0 + 0..41: the calendar's day cells */
 };
 
 enum {
@@ -71,7 +70,7 @@ struct IntuitionBase *IntuitionBase;
 struct GfxBase *GfxBase;
 struct Library *AslBase, *DiskfontBase;
 struct Library *WindowBase, *LayoutBase, *ButtonBase, *ListBrowserBase;
-struct Library *ScrollerBase, *SpaceBase, *TextFieldBase, *RequesterBase;
+struct Library *ScrollerBase, *TextFieldBase, *RequesterBase;
 
 /* A list of days (days since 1 Jan 1978, the Amiga epoch), newest first. */
 typedef struct {
@@ -91,12 +90,13 @@ static struct TextAttr gTextAttr;
 static struct TextFont *gTextFont;
 
 static struct Screen *gScreen;
-static Object *gWindowObj, *gCalendar, *gList, *gDateLabel, *gEditor, *gScroller;
+static struct DrawInfo *gDrawInfo;
+static Object *gWindowObj, *gList, *gDateLabel, *gEditor, *gScroller;
+static Object *gMonthLabel, *gDayCells[42];
 static struct Window *gWindow;
 static struct List gListNodes;
-static struct Hook gCalendarHook;
-static WORD gCellWidth, gCellHeight;
-static char gDateText[64];
+static char gDateText[64], gMonthText[32];
+static char gDayNumbers[32][3];         /* "1".."31" for the day cells */
 static BOOL gRebuilt;                   /* window was recreated: stop handling its input */
 
 static const char *kWeekdays[] = {
@@ -150,7 +150,7 @@ static struct TagItem kScrollerToEditor[] = {
 };
 
 static void RefreshList(void);
-static void RedrawCalendar(void);
+static void UpdateCalendar(void);
 
 /* ---------- Small string helpers ---------- */
 
@@ -577,7 +577,7 @@ static void ShowMonthOf(LONG day)
     DayToDate(day, &y, &m, &d);
     gCalYear = y;
     gCalMonth = m;
-    RedrawCalendar();
+    UpdateCalendar();
 }
 
 static void SyncListSelection(void)
@@ -646,7 +646,7 @@ static BOOL SaveEntry(void)
         RemoveDay(&gAllDays, gDay);
         RemoveDay(&gShownDays, gDay);
         RefreshList();
-        RedrawCalendar();
+        UpdateCalendar();
     } else {
         BOOL ok = WriteTextFile(path, text, length);
 
@@ -660,7 +660,7 @@ static BOOL SaveEntry(void)
             if (gSearch[0] == 0)
                 InsertDay(&gShownDays, gDay);
             RefreshList();
-            RedrawCalendar();
+            UpdateCalendar();
         }
     }
     SetGadgetAttrs((struct Gadget *)gEditor, gWindow, NULL,
@@ -743,7 +743,7 @@ static void ShowAllEntries(void)
     gSearch[0] = 0;
     CopyDays(&gShownDays, &gAllDays);
     RefreshList();
-    RedrawCalendar();
+    UpdateCalendar();
 }
 
 static BOOL AskForSearchText(char *text)
@@ -797,7 +797,7 @@ static void DoFind(void)
     } else {
         CopyDays(&gShownDays, &matches);
         RefreshList();
-        RedrawCalendar();
+        UpdateCalendar();
         if (FindDay(&gShownDays, gDay) < 0)
             GoToDay(gShownDays.days[0]);
         SelectMatch(TRUE);
@@ -877,9 +877,9 @@ static void DoListClick(void)
 
 /* ---------- Calendar ---------- */
 
-/* The calendar has a title row (arrows and month), a row of weekday
-   initials and six rows of days, each kCellHeight high and 7 cells wide.
-   Cells are numbered 0..41, row by row, starting on a Sunday. */
+/* The calendar is made of buttons: a title row (arrows and month), a row of
+   weekday initials and 42 day cells, numbered row by row from a Sunday.
+   Days with an entry are bold, today is framed and the open day is filled. */
 
 static LONG CalendarFirstDay(void)
 {
@@ -893,94 +893,33 @@ static LONG CalendarMonthLength(void)
     return next - CalendarFirstDay();
 }
 
-/* Top-left corner of the 7-column grid inside the space gadget's area. */
-static void CalendarOrigin(const struct IBox *box, WORD *left, WORD *top)
+static void UpdateCalendar(void)
 {
-    *left = box->Left + (box->Width - 7 * gCellWidth) / 2;
-    *top = box->Top;
-}
-
-static void DrawCentered(struct RastPort *rp, WORD left, WORD top, WORD width,
-                         const char *s, int length)
-{
-    WORD w = TextLength(rp, (STRPTR)s, length);
-
-    Move(rp, left + (width - w) / 2, top + 2 + rp->TxBaseline);
-    Text(rp, (STRPTR)s, length);
-}
-
-static ULONG CalendarRender(struct Hook *hook, Object *obj, struct gpRender *msg)
-{
-    static const char kInitials[] = "SMTWTFS";
-    struct RastPort *rp = msg->gpr_RPort;
-    UWORD *pens = msg->gpr_GInfo->gi_DrInfo->dri_Pens;
-    struct IBox *box = NULL;
     LONG first = CalendarFirstDay(), length = CalendarMonthLength(), today = Today();
     int lead = Weekday(first), i;
-    WORD left, top;
-    char title[32];
+    UWORD *pens = gDrawInfo->dri_Pens;
 
-    (void)hook;
-    GetAttr(SPACE_AreaBox, obj, (ULONG *)&box);
-    if (box == NULL || rp == NULL)
-        return 0;
-    CalendarOrigin(box, &left, &top);
-    SetDrMd(rp, JAM1);
+    if (gMonthLabel == NULL)
+        return;
+    strcpy(gMonthText, kMonths[gCalMonth - 1]);
+    strcat(gMonthText, " ");
+    AppendNum(gMonthText, gCalYear, 4);
+    SetGadgetAttrs((struct Gadget *)gMonthLabel, gWindow, NULL, GA_Text, gMonthText, TAG_DONE);
 
-    /* Title row: < Month Year > */
-    SetAPen(rp, pens[TEXTPEN]);
-    DrawCentered(rp, left, top, gCellWidth, "<", 1);
-    DrawCentered(rp, left + 6 * gCellWidth, top, gCellWidth, ">", 1);
-    strcpy(title, kMonths[gCalMonth - 1]);
-    strcat(title, " ");
-    AppendNum(title, gCalYear, 4);
-    SetSoftStyle(rp, FSF_BOLD, FSF_BOLD);
-    DrawCentered(rp, left + gCellWidth, top, 5 * gCellWidth, title, strlen(title));
-    SetSoftStyle(rp, 0, FSF_BOLD);
+    for (i = 0; i < 42; i++) {
+        LONG n = i - lead + 1, day = first + n - 1;
+        BOOL used = n >= 1 && n <= length;
+        BOOL open = used && day == gDay;
 
-    /* Weekday initials */
-    top += gCellHeight;
-    SetAPen(rp, pens[SHADOWPEN]);
-    for (i = 0; i < 7; i++)
-        DrawCentered(rp, left + i * gCellWidth, top, gCellWidth, &kInitials[i], 1);
-
-    /* Days: bold if listed, framed if today, filled if open */
-    top += gCellHeight;
-    for (i = 0; i < length; i++) {
-        LONG day = first + i;
-        int cell = lead + i;
-        WORD x = left + (cell % 7) * gCellWidth;
-        WORD y = top + (cell / 7) * gCellHeight;
-        char number[4] = "";
-
-        AppendNum(number, i + 1, 1);
-        if (day == gDay) {
-            SetAPen(rp, pens[FILLPEN]);
-            RectFill(rp, x + 1, y, x + gCellWidth - 2, y + gCellHeight - 1);
-            SetAPen(rp, pens[FILLTEXTPEN]);
-        } else {
-            SetAPen(rp, pens[TEXTPEN]);
-        }
-        if (FindDay(&gShownDays, day) >= 0)
-            SetSoftStyle(rp, FSF_BOLD, FSF_BOLD);
-        DrawCentered(rp, x, y, gCellWidth, number, strlen(number));
-        SetSoftStyle(rp, 0, FSF_BOLD);
-        if (day == today) {
-            SetAPen(rp, pens[day == gDay ? FILLTEXTPEN : TEXTPEN]);
-            Move(rp, x + 1, y);
-            Draw(rp, x + gCellWidth - 2, y);
-            Draw(rp, x + gCellWidth - 2, y + gCellHeight - 1);
-            Draw(rp, x + 1, y + gCellHeight - 1);
-            Draw(rp, x + 1, y);
-        }
+        SetGadgetAttrs((struct Gadget *)gDayCells[i], gWindow, NULL,
+                       GA_ReadOnly, !used,
+                       BUTTON_BevelStyle, used && day == today ? BVS_THIN : BVS_NONE,
+                       BUTTON_BackgroundPen, open ? pens[FILLPEN] : ~0UL,
+                       BUTTON_TextPen, open ? pens[FILLTEXTPEN] : ~0UL,
+                       BUTTON_SoftStyle, used && FindDay(&gShownDays, day) >= 0 ? FSF_BOLD : FS_NORMAL,
+                       GA_Text, used ? gDayNumbers[n] : "",
+                       TAG_DONE);
     }
-    return 0;
-}
-
-static void RedrawCalendar(void)
-{
-    if (gWindow != NULL)
-        RefreshGList((struct Gadget *)gCalendar, gWindow, NULL, 1);
 }
 
 static void ChangeCalendarMonth(int delta)
@@ -993,38 +932,16 @@ static void ChangeCalendarMonth(int delta)
         gCalMonth = 1;
         gCalYear++;
     }
-    RedrawCalendar();
+    UpdateCalendar();
 }
 
-static void DoCalendarClick(void)
+static void DoDayClick(int cell)
 {
-    struct IBox *box = NULL;
-    WORD left, top, x, y;
-    int row, column;
+    LONG first = CalendarFirstDay();
+    LONG index = cell - Weekday(first);
 
-    GetAttr(SPACE_AreaBox, gCalendar, (ULONG *)&box);
-    if (box == NULL)
-        return;
-    CalendarOrigin(box, &left, &top);
-    x = gWindow->MouseX - left;
-    y = gWindow->MouseY - top;
-    if (x < 0 || y < 0 || x >= 7 * gCellWidth)
-        return;
-    column = x / gCellWidth;
-    row = y / gCellHeight;
-
-    if (row == 0) {
-        if (column == 0)
-            ChangeCalendarMonth(-1);
-        else if (column == 6)
-            ChangeCalendarMonth(1);
-    } else if (row >= 2 && row < 8) {
-        LONG first = CalendarFirstDay();
-        LONG index = (row - 2) * 7 + column - Weekday(first);
-
-        if (index >= 0 && index < CalendarMonthLength())
-            OpenDay(first + index);
-    }
+    if (index >= 0 && index < CalendarMonthLength())
+        OpenDay(first + index);
 }
 
 /* ---------- Window ---------- */
@@ -1038,26 +955,87 @@ static Object *MakeButton(ULONG id, const char *text)
         End;
 }
 
+/* A flat text label, used for the month and the weekday initials. */
+static Object *MakeLabel(ULONG id, const char *text, BOOL bold)
+{
+    return ButtonObject,
+        GA_ID, id,
+        GA_ReadOnly, TRUE,
+        GA_Text, text,
+        BUTTON_BevelStyle, BVS_NONE,
+        BUTTON_SoftStyle, bold ? FSF_BOLD : FS_NORMAL,
+        End;
+}
+
+static Object *MakeDayCell(int cell)
+{
+    return gDayCells[cell] = ButtonObject,
+        GA_ID, GID_DAY0 + cell,
+        GA_RelVerify, TRUE,
+        GA_Text, "",
+        BUTTON_DomainString, "000",     /* room for the frame around today */
+        BUTTON_BevelStyle, BVS_NONE,
+        End;
+}
+
+static Object *MakeWeekRow(int row)
+{
+    int c = row * 7;
+
+    return HLayoutObject,
+        LAYOUT_EvenSize, TRUE,
+        LAYOUT_SpaceInner, FALSE,
+        LAYOUT_AddChild, MakeDayCell(c),
+        LAYOUT_AddChild, MakeDayCell(c + 1),
+        LAYOUT_AddChild, MakeDayCell(c + 2),
+        LAYOUT_AddChild, MakeDayCell(c + 3),
+        LAYOUT_AddChild, MakeDayCell(c + 4),
+        LAYOUT_AddChild, MakeDayCell(c + 5),
+        LAYOUT_AddChild, MakeDayCell(c + 6),
+        End;
+}
+
+static Object *MakeCalendar(void)
+{
+    return VLayoutObject,
+        LAYOUT_SpaceInner, FALSE,
+        LAYOUT_AddChild, HLayoutObject,
+            LAYOUT_AddChild, MakeButton(GID_CALPREV, "<"),
+            CHILD_WeightedWidth, 0,
+            LAYOUT_AddChild, gMonthLabel = MakeLabel(GID_MONTH, gMonthText, TRUE),
+            LAYOUT_AddChild, MakeButton(GID_CALNEXT, ">"),
+            CHILD_WeightedWidth, 0,
+            End,
+        LAYOUT_AddChild, HLayoutObject,
+            LAYOUT_EvenSize, TRUE,
+            LAYOUT_SpaceInner, FALSE,
+            LAYOUT_AddChild, MakeLabel(0, "S", FALSE),
+            LAYOUT_AddChild, MakeLabel(0, "M", FALSE),
+            LAYOUT_AddChild, MakeLabel(0, "T", FALSE),
+            LAYOUT_AddChild, MakeLabel(0, "W", FALSE),
+            LAYOUT_AddChild, MakeLabel(0, "T", FALSE),
+            LAYOUT_AddChild, MakeLabel(0, "F", FALSE),
+            LAYOUT_AddChild, MakeLabel(0, "S", FALSE),
+            End,
+        LAYOUT_AddChild, MakeWeekRow(0),
+        LAYOUT_AddChild, MakeWeekRow(1),
+        LAYOUT_AddChild, MakeWeekRow(2),
+        LAYOUT_AddChild, MakeWeekRow(3),
+        LAYOUT_AddChild, MakeWeekRow(4),
+        LAYOUT_AddChild, MakeWeekRow(5),
+        End;
+}
+
 static BOOL CreateWindowObject(void)
 {
-    struct RastPort *rp = &gScreen->RastPort;
     Object *layout;
-
-    gCellWidth = TextLength(rp, (STRPTR)"00", 2) + 8;
-    gCellHeight = rp->TxHeight + 4;
 
     layout = LayoutObject,
         LAYOUT_DeferLayout, TRUE,
         LAYOUT_SpaceOuter, TRUE,
 
         LAYOUT_AddChild, VLayoutObject,
-            LAYOUT_AddChild, gCalendar = SpaceObject,
-                GA_ID, GID_CALENDAR,
-                GA_RelVerify, TRUE,
-                SPACE_MinWidth, 7 * gCellWidth + 8,
-                SPACE_MinHeight, 8 * gCellHeight + 2,
-                SPACE_RenderHook, &gCalendarHook,
-                End,
+            LAYOUT_AddChild, MakeCalendar(),
             CHILD_WeightedHeight, 0,
             LAYOUT_AddChild, gList = ListBrowserObject,
                 GA_ID, GID_LIST,
@@ -1119,8 +1097,7 @@ static BOOL CreateWindowObject(void)
         WA_SizeGadget, TRUE,
         WA_InnerWidth, gScreen->Width < 680 ? gScreen->Width - 40 : 640,
         WA_InnerHeight, gScreen->Height < 400 ? gScreen->Height - 60 : 340,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_GADGETUP | IDCMP_MENUPICK
-                  | IDCMP_NEWSIZE | IDCMP_MOUSEBUTTONS,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_GADGETUP | IDCMP_MENUPICK | IDCMP_NEWSIZE,
         WINDOW_Position, WPOS_CENTERSCREEN,
         WINDOW_NewMenu, kMenus,
         WINDOW_Layout, layout,
@@ -1141,6 +1118,7 @@ static void DisposeWindowObject(void)
     }
     gWindowObj = NULL;
     gWindow = NULL;
+    gMonthLabel = NULL;
 }
 
 /* Fonts can't be changed in an open texteditor, so the window is rebuilt. */
@@ -1234,8 +1212,13 @@ static BOOL DoMenuPick(UWORD code)
 
 static BOOL DoGadgetUp(UWORD id)
 {
+    if (id >= GID_DAY0 && id < GID_DAY0 + 42) {
+        DoDayClick(id - GID_DAY0);
+        return FALSE;
+    }
     switch (id) {
-    case GID_CALENDAR: DoCalendarClick(); break;
+    case GID_CALPREV:  ChangeCalendarMonth(-1); break;
+    case GID_CALNEXT:  ChangeCalendarMonth(1); break;
     case GID_LIST:     DoListClick(); break;
     case GID_PREV:     OpenDay(gDay - 1); break;
     case GID_TODAY:    OpenDay(Today()); break;
@@ -1263,17 +1246,6 @@ static BOOL HandleInput(void)
             break;
         case WMHI_GADGETUP:
             quit = DoGadgetUp(result & WMHI_GADGETMASK);
-            break;
-        case WMHI_MOUSEBUTTONS:
-            /* in case the calendar passes clicks on instead of reporting them */
-            if ((result & WMHI_KEYMASK) == SELECTDOWN) {
-                struct IBox *box = NULL;
-                GetAttr(SPACE_AreaBox, gCalendar, (ULONG *)&box);
-                if (box != NULL
-                        && gWindow->MouseX >= box->Left && gWindow->MouseX < box->Left + box->Width
-                        && gWindow->MouseY >= box->Top && gWindow->MouseY < box->Top + box->Height)
-                    DoCalendarClick();
-            }
             break;
         }
         if (quit)
@@ -1313,7 +1285,6 @@ static BOOL OpenLibraries(void)
     ButtonBase = OpenClass("gadgets/button.gadget", 47, missing);
     ListBrowserBase = OpenClass("gadgets/listbrowser.gadget", 47, missing);
     ScrollerBase = OpenClass("gadgets/scroller.gadget", 47, missing);
-    SpaceBase = OpenClass("gadgets/space.gadget", 47, missing);
     TextFieldBase = OpenClass("gadgets/texteditor.gadget", 47, missing);
     RequesterBase = OpenClass("requester.class", 47, missing);
 
@@ -1331,7 +1302,7 @@ static BOOL OpenLibraries(void)
 static void CloseLibraries(void)
 {
     struct Library *bases[] = {
-        RequesterBase, TextFieldBase, SpaceBase, ScrollerBase, ListBrowserBase,
+        RequesterBase, TextFieldBase, ScrollerBase, ListBrowserBase,
         ButtonBase, LayoutBase, WindowBase, DiskfontBase, AslBase,
         (struct Library *)GfxBase, (struct Library *)IntuitionBase
     };
@@ -1346,14 +1317,19 @@ int main(void)
 {
     int rc = 20;
 
+    int i;
+
     NewList(&gListNodes);
-    gCalendarHook.h_Entry = (ULONG (*)())HookEntry;
-    gCalendarHook.h_SubEntry = (ULONG (*)())CalendarRender;
+    for (i = 1; i <= 31; i++)
+        AppendNum(gDayNumbers[i], i, 1);
 
     if (!OpenLibraries())
         goto done;
     gScreen = LockPubScreen(NULL);
     if (gScreen == NULL)
+        goto done;
+    gDrawInfo = GetScreenDrawInfo(gScreen);
+    if (gDrawInfo == NULL)
         goto done;
 
     FindEntriesFolder();
@@ -1390,6 +1366,8 @@ done:
         FreeListBrowserList(&gListNodes);
     if (gTextFont != NULL)
         CloseFont(gTextFont);
+    if (gDrawInfo != NULL)
+        FreeScreenDrawInfo(gScreen, gDrawInfo);
     if (gScreen != NULL)
         UnlockPubScreen(NULL, gScreen);
     FreeDays(&gAllDays);
