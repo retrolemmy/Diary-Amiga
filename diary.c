@@ -46,7 +46,7 @@
 
 #include <string.h>
 
-static const char kVersion[] __attribute__((used)) = "$VER: Diary 1.0 (27.10.2026)";
+static const char kVersion[] __attribute__((used)) = "$VER: Diary 1.1 (28.10.2026)";
 
 #define kEntriesDir     "PROGDIR:Diary Entries"
 #define kSettingsFile   "PROGDIR:Diary Entries/Diary Settings"
@@ -393,7 +393,7 @@ static void ShowError(const char *text)
 
 static void ShowAbout(void)
 {
-    ShowMessage("Diary 1.0\n\n"
+    ShowMessage("Diary 1.1\n\n"
                 "A simple day-by-day journal for AmigaOS 3.2.\n"
                 "Entries are kept in the \"Diary Entries\" drawer.");
 }
@@ -445,14 +445,67 @@ static void ScanEntries(void)
         FreeDosObject(DOS_FIB, fib);
 }
 
-/* Reads a whole file into a new NUL-terminated buffer (free with FreeVec).
-   Mac-style CR and CR LF line ends become LF. Returns NULL if the file
-   doesn't exist or can't be read. */
+/* ISO Latin-1 for MacRoman 0x80..0xFF; plain look-alikes for typographic
+   characters, '?' where Latin-1 has no match. */
+static const UBYTE kMacToLatin1[128] = {
+    0xC4, 0xC5, 0xC7, 0xC9, 0xD1, 0xD6, 0xDC, 0xE1,  /* 80 */
+    0xE0, 0xE2, 0xE4, 0xE3, 0xE5, 0xE7, 0xE9, 0xE8,  /* 88 */
+    0xEA, 0xEB, 0xED, 0xEC, 0xEE, 0xEF, 0xF1, 0xF3,  /* 90 */
+    0xF2, 0xF4, 0xF6, 0xF5, 0xFA, 0xF9, 0xFB, 0xFC,  /* 98 */
+    0x2B, 0xB0, 0xA2, 0xA3, 0xA7, 0xB7, 0xB6, 0xDF,  /* A0 */
+    0xAE, 0xA9, 0x3F, 0xB4, 0xA8, 0x3F, 0xC6, 0xD8,  /* A8 */
+    0x3F, 0xB1, 0x3F, 0x3F, 0xA5, 0xB5, 0x3F, 0x3F,  /* B0 */
+    0x3F, 0x3F, 0x3F, 0xAA, 0xBA, 0x3F, 0xE6, 0xF8,  /* B8 */
+    0xBF, 0xA1, 0xAC, 0x3F, 0x3F, 0x3F, 0x3F, 0xAB,  /* C0 */
+    0xBB, 0x2E, 0xA0, 0xC0, 0xC3, 0xD5, 0x3F, 0x3F,  /* C8 */
+    0x2D, 0x2D, 0x22, 0x22, 0x27, 0x27, 0xF7, 0x3F,  /* D0 */
+    0xFF, 0x3F, 0x2F, 0x3F, 0x3C, 0x3E, 0x3F, 0x3F,  /* D8 */
+    0x3F, 0xB7, 0x2C, 0x22, 0x3F, 0xC2, 0xCA, 0xC1,  /* E0 */
+    0xCB, 0xC8, 0xCD, 0xCE, 0xCF, 0xCC, 0xD3, 0xD4,  /* E8 */
+    0x3F, 0xD2, 0xDA, 0xDB, 0xD9, 0x3F, 0x5E, 0x7E,  /* F0 */
+    0xAF, 0x3F, 0x3F, 0x3F, 0xB8, 0x3F, 0x3F, 0x3F   /* F8 */
+};
+
+/* Converts text from the Mac version in place: CR and CR LF line ends become
+   LF, and MacRoman characters become Latin-1. Diary always ends its files
+   with LF, so text without any LF, or with bytes 0x80..0x9F (which only
+   MacRoman uses), came from the Mac. Returns the new length. */
+static LONG ConvertForeignText(UBYTE *text, LONG size)
+{
+    BOOL hasLF = FALSE, hasC1 = FALSE, isMacRoman;
+    LONG i, j;
+
+    for (i = 0; i < size; i++) {
+        if (text[i] == '\n')
+            hasLF = TRUE;
+        else if (text[i] >= 0x80 && text[i] < 0xA0)
+            hasC1 = TRUE;
+    }
+    isMacRoman = !hasLF || hasC1;
+
+    for (i = j = 0; i < size; i++) {
+        UBYTE c = text[i];
+
+        if (c == '\r') {
+            c = '\n';
+            if (i + 1 < size && text[i + 1] == '\n')
+                i++;
+        } else if (c >= 0x80 && isMacRoman) {
+            c = kMacToLatin1[c - 0x80];
+        }
+        text[j++] = c;
+    }
+    return j;
+}
+
+/* Reads a whole file into a new NUL-terminated buffer (free with FreeVec),
+   converting text from the Mac version. Returns NULL if the file doesn't
+   exist or can't be read. */
 static char *ReadTextFile(const char *path, LONG *length)
 {
     BPTR file = Open(path, MODE_OLDFILE);
     char *buf = NULL;
-    LONG size, i, j;
+    LONG size;
 
     if (file == 0)
         return NULL;
@@ -468,17 +521,8 @@ static char *ReadTextFile(const char *path, LONG *length)
     if (buf == NULL)
         return NULL;
 
-    for (i = j = 0; i < size; i++) {
-        if (buf[i] == '\r') {
-            buf[j++] = '\n';
-            if (i + 1 < size && buf[i + 1] == '\n')
-                i++;
-        } else {
-            buf[j++] = buf[i];
-        }
-    }
-    buf[j] = 0;
-    *length = j;
+    *length = ConvertForeignText((UBYTE *)buf, size);
+    buf[*length] = 0;
     return buf;
 }
 
@@ -1088,7 +1132,7 @@ static BOOL CreateWindowObject(void)
 
     gWindowObj = WindowObject,
         WA_Title, "Diary",
-        WA_ScreenTitle, "Diary 1.0",
+        WA_ScreenTitle, "Diary 1.1",
         WA_PubScreen, gScreen,
         WA_Activate, TRUE,
         WA_DragBar, TRUE,

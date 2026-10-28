@@ -18,8 +18,10 @@ It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retr
 - The current entry is saved automatically when you switch days or quit;
   Amiga-S saves at any time
 - Entries are plain text files named `YYYY-MM-DD` in a **Diary Entries**
-  drawer next to the program, so any text editor can open them. Entries
-  copied over from the Mac version work too (their line ends are converted)
+  drawer next to the program, so any text editor can open them
+- Entries written by the Mac version can be copied in and read as they are:
+  their line ends and accented letters (MacRoman) are converted, and the Mac
+  version reads the entries written here the same way
 - Clearing an entry completely deletes its file
 
 Diary uses the ReAction classes that come with AmigaOS 3.2 (including
