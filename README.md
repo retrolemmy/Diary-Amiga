@@ -36,6 +36,16 @@ Diary uses the ReAction classes that come with AmigaOS 3.2 (including
 `texteditor.gadget`), so it needs 3.2 or later; on older systems it tells
 you which classes are missing.
 
+## Diary Server
+
+To share the entries between your computers, run
+[Diary Server](https://github.com/retrolemmy/Diary-Server) on a machine in
+your network, such as a RetroNAS or any small Linux box with Python 3.9 or
+later: download `diary_server.py` from its
+[latest release](https://github.com/retrolemmy/Diary-Server/releases/latest)
+and start it as its README describes. Diary works with Diary Server 1.0 or
+later. The same server also gives modern browsers a Diary web page.
+
 ## Building
 
 You need [bebbo's amiga-gcc](https://codeberg.org/bebbo/amiga-gcc) with the
