@@ -1,7 +1,8 @@
 # Diary for AmigaOS 3.2
 
 A simple one-page-per-day journal for 68k Amigas running AmigaOS 3.2.
-It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retrolemmy/Diary),
+It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retrolemmy/Diary)
+(on 68k Macs and on PowerPC Macs up to a G4 with Mac OS 9.2.2),
 [Diary for Mac OS X](https://github.com/retrolemmy/Diary-MacOSX) and
 [Diary for Windows 98](https://github.com/retrolemmy/Diary-Win98).
 
