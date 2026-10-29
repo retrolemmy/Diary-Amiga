@@ -23,6 +23,12 @@ It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retr
   their line ends and accented letters (MacRoman) are converted, and the Mac
   version reads the entries written here the same way
 - Clearing an entry completely deletes its file
+- **Settings → Diary Server...** keeps the entries on a
+  [Diary Server](https://github.com/retrolemmy/Diary-Server) instead, so all
+  your Amigas and Macs share them. Search then runs on the server, and if an
+  entry was changed on another computer since you opened it, Diary asks
+  before saving over it. It needs a TCP/IP stack such as Roadshow; without a
+  server set, Diary never touches the network
 
 Diary uses the ReAction classes that come with AmigaOS 3.2 (including
 `texteditor.gadget`), so it needs 3.2 or later; on older systems it tells

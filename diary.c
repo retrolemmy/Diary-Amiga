@@ -46,7 +46,9 @@
 
 #include <string.h>
 
-static const char kVersion[] __attribute__((used)) = "$VER: Diary 1.1 (28.10.2026)";
+#include "net.h"
+
+static const char kVersion[] __attribute__((used)) = "$VER: Diary 1.2 (29.10.2026)";
 
 #define kEntriesDir     "PROGDIR:Diary Entries"
 #define kSettingsFile   "PROGDIR:Diary Entries/Diary Settings"
@@ -63,7 +65,7 @@ enum {
     CMD_UNDO, CMD_REDO, CMD_CUT, CMD_COPY, CMD_PASTE, CMD_SELECTALL,
     CMD_FIND, CMD_FINDAGAIN, CMD_SHOWALL,
     CMD_PREVDAY, CMD_NEXTDAY, CMD_TODAY,
-    CMD_FONT
+    CMD_FONT, CMD_SERVER
 };
 
 struct IntuitionBase *IntuitionBase;
@@ -83,6 +85,13 @@ static char gSearch[kMaxSearch + 1];    /* current filter, "" = none */
 static LONG gDay;                       /* the open day */
 static LONG gCalYear, gCalMonth;        /* the month the calendar shows */
 static BOOL gHaveFolder;
+
+/* With a Diary Server set, entries live there instead of in the drawer. */
+static char gServer[64];                /* "host" or "host:port", "" = local */
+static char gServerKey[64];
+static BOOL gUseServer;                 /* FALSE also after "Work Locally" */
+static char gEntryVersion[16];          /* server version of the open entry */
+static char gTitle[100] = "Diary";
 
 static char gFontName[64];              /* entry font, "" = default */
 static UWORD gFontSize;
@@ -134,6 +143,7 @@ static struct NewMenu kMenus[] = {
     { NM_ITEM,  (STRPTR)"Today",            (STRPTR)"T", 0, 0, (APTR)CMD_TODAY },
     { NM_TITLE, (STRPTR)"Settings",         NULL, 0, 0, NULL },
     { NM_ITEM,  (STRPTR)"Entry Font...",    NULL, 0, 0, (APTR)CMD_FONT },
+    { NM_ITEM,  (STRPTR)"Diary Server...",  NULL, 0, 0, (APTR)CMD_SERVER },
     { NM_END,   NULL,                       NULL, 0, 0, NULL }
 };
 
@@ -368,9 +378,9 @@ static LONG Ask(const char *text, const char *buttons)
     es.es_StructSize = sizeof(es);
     es.es_Flags = 0;
     es.es_Title = (STRPTR)"Diary";
-    es.es_TextFormat = (STRPTR)text;
+    es.es_TextFormat = (STRPTR)"%s";    /* so a '%' in text is shown, not interpreted */
     es.es_GadgetFormat = (STRPTR)buttons;
-    return EasyRequestArgs(gWindow, &es, NULL, NULL);
+    return EasyRequestArgs(gWindow, &es, NULL, (APTR)&text);
 }
 
 static void ShowMessage(const char *text)
@@ -393,14 +403,37 @@ static void ShowError(const char *text)
 
 static void ShowAbout(void)
 {
-    ShowMessage("Diary 1.1\n\n"
+    ShowMessage("Diary 1.2\n\n"
                 "A simple day-by-day journal for AmigaOS 3.2.\n"
                 "Entries are kept in the \"Diary Entries\" drawer.");
 }
 
 static void SetBusy(BOOL busy)
 {
-    SetAttrs(gWindowObj, WA_BusyPointer, busy, TAG_DONE);
+    if (gWindowObj != NULL)
+        SetAttrs(gWindowObj, WA_BusyPointer, busy, TAG_DONE);
+}
+
+/* Shows a server problem: what failed, then why. */
+static void ShowServerError(const char *what, const char *why)
+{
+    char message[300];
+
+    strcpy(message, what);
+    strcat(message, "\n");
+    strncat(message, why, 200);
+    ShowMessage(message);
+}
+
+static void UpdateTitle(void)
+{
+    strcpy(gTitle, "Diary");
+    if (gUseServer) {
+        strcat(gTitle, " - ");
+        strcat(gTitle, gServer);
+    }
+    if (gWindowObj != NULL)
+        SetAttrs(gWindowObj, WA_Title, gTitle, TAG_DONE);
 }
 
 /* ---------- Entry files ---------- */
@@ -422,7 +455,7 @@ static void FindEntriesFolder(void)
         UnLock(lock);
 }
 
-static void ScanEntries(void)
+static void ScanLocalEntries(void)
 {
     struct FileInfoBlock *fib;
     BPTR lock;
@@ -443,6 +476,66 @@ static void ScanEntries(void)
         UnLock(lock);
     if (fib != NULL)
         FreeDosObject(DOS_FIB, fib);
+}
+
+/* Adds the days of a server reply ("YYYY-MM-DD ..." lines) to list. */
+static void AddDaysFromReply(DayList *list, const char *reply)
+{
+    while (*reply != 0) {
+        char name[11];
+        LONG day;
+
+        strncpy(name, reply, 10);
+        name[10] = 0;
+        if (ParseEntryName(name, &day))
+            InsertDay(list, day);
+        reply = strchr(reply, '\n');
+        if (reply == NULL)
+            break;
+        reply++;
+    }
+}
+
+static BOOL ScanServerEntries(char *error, LONG errorSize)
+{
+    HttpResponse response;
+
+    if (!HttpRequest("GET", "/entries", NULL, 0, NULL, &response, error, errorSize))
+        return FALSE;
+    if (response.status != 200) {
+        strcpy(error, response.status == 403 ? "The server wants a different key."
+                                             : "The server refused the entry list.");
+        HttpFree(&response);
+        return FALSE;
+    }
+    AddDaysFromReply(&gAllDays, response.body);
+    HttpFree(&response);
+    return TRUE;
+}
+
+/* Reads the list of entries, from the server if one is set. If it can't be
+   reached, Diary can work with the local drawer for this session. */
+static void ScanEntries(void)
+{
+    gAllDays.count = 0;
+    while (gUseServer) {
+        char error[200], message[300];
+
+        SetBusy(TRUE);
+        if (ScanServerEntries(error, sizeof(error))) {
+            SetBusy(FALSE);
+            return;
+        }
+        SetBusy(FALSE);
+        gAllDays.count = 0;
+        strcpy(message, "Diary couldn't get the entries from the Diary Server:\n");
+        strcat(message, error);
+        if (Ask(message, "Retry|Work Locally") == 0) {
+            gUseServer = FALSE;     /* for this session; the setting stays */
+            UpdateTitle();
+        }
+    }
+    ScanLocalEntries();
 }
 
 /* ISO Latin-1 for MacRoman 0x80..0xFF; plain look-alikes for typographic
@@ -541,37 +634,56 @@ static BOOL WriteTextFile(const char *path, const char *text, LONG length)
 
 /* ---------- Settings ---------- */
 
+/* Copies the next line of text into out (at most size - 1 characters). */
+static char *NextLine(char *text, char *out, LONG size)
+{
+    LONG n = 0;
+
+    while (*text != 0 && *text != '\n') {
+        if (n < size - 1)
+            out[n++] = *text;
+        text++;
+    }
+    out[n] = 0;
+    return *text == '\n' ? text + 1 : text;
+}
+
+/* The settings file has one value per line: font name, font size,
+   server address and server key. */
 static void LoadSettings(void)
 {
     LONG length, size = 0;
     char *text = ReadTextFile(kSettingsFile, &length);
-    char *p;
+    char *p, name[sizeof(gFontName)], number[8];
 
     if (text == NULL)
         return;
-    /* "font name\nsize\n" */
-    p = strchr(text, '\n');
-    if (p != NULL && p - text < (LONG)sizeof(gFontName)) {
-        *p++ = 0;
-        while (*p >= '0' && *p <= '9')
-            size = size * 10 + (*p++ - '0');
-        if (text[0] != 0 && size > 0 && size < 256) {
-            strcpy(gFontName, text);
-            gFontSize = size;
-        }
+    p = NextLine(text, name, sizeof(name));
+    p = NextLine(p, number, sizeof(number));
+    for (length = 0; number[length] >= '0' && number[length] <= '9'; length++)
+        size = size * 10 + (number[length] - '0');
+    if (name[0] != 0 && size > 0 && size < 256) {
+        strcpy(gFontName, name);
+        gFontSize = size;
     }
+    p = NextLine(p, gServer, sizeof(gServer));
+    NextLine(p, gServerKey, sizeof(gServerKey));
     FreeVec(text);
 }
 
 static void SaveSettings(void)
 {
-    char text[sizeof(gFontName) + 8];
+    char text[sizeof(gFontName) + sizeof(gServer) + sizeof(gServerKey) + 16];
 
     if (!gHaveFolder)
         return;
     strcpy(text, gFontName);
     strcat(text, "\n");
-    AppendNum(text, gFontSize, 1);
+    AppendNum(text, gFontName[0] ? gFontSize : 0, 1);
+    strcat(text, "\n");
+    strcat(text, gServer);
+    strcat(text, "\n");
+    strcat(text, gServerKey);
     WriteTextFile(kSettingsFile, text, strlen(text));
 }
 
@@ -634,16 +746,50 @@ static void SyncListSelection(void)
                    TAG_DONE);
 }
 
+/* Fetches the day's entry from the server; "" if there's none. Returns a
+   buffer to free with FreeVec(), like ReadTextFile(). */
+static char *ReadServerEntry(LONG day)
+{
+    char path[32], error[200];
+    HttpResponse response;
+    char *text;
+
+    strcpy(path, "/entries/");
+    MakeEntryName(day, path + strlen(path));
+    strcpy(gEntryVersion, "none");
+    SetBusy(TRUE);
+    if (!HttpRequest("GET", path, NULL, 0, NULL, &response, error, sizeof(error))) {
+        SetBusy(FALSE);
+        ShowServerError("Diary couldn't load the entry from the Diary Server:", error);
+        return NULL;
+    }
+    SetBusy(FALSE);
+    if (response.status == 200) {
+        strcpy(gEntryVersion, response.version);
+        text = response.body;       /* keep the buffer; HttpFree() isn't needed */
+        return text;
+    }
+    if (response.status != 404)
+        ShowServerError("Diary couldn't load the entry from the Diary Server:",
+                        response.status == 403 ? "The server wants a different key." : response.body);
+    HttpFree(&response);
+    return NULL;
+}
+
 static void LoadEntry(void)
 {
     char path[64];
     LONG length;
     char *text;
 
-    EntryPath(gDay, path);
-    text = ReadTextFile(path, &length);
-    if (text != NULL && length > 0 && text[length - 1] == '\n')
-        text[length - 1] = 0;       /* SaveEntry adds one line end */
+    if (gUseServer) {
+        text = ReadServerEntry(gDay);
+    } else {
+        EntryPath(gDay, path);
+        text = ReadTextFile(path, &length);
+        if (text != NULL && length > 0 && text[length - 1] == '\n')
+            text[length - 1] = 0;   /* SaveEntry adds one line end */
+    }
 
     SetGadgetAttrs((struct Gadget *)gEditor, gWindow, NULL,
                    GA_TEXTEDITOR_Contents, text != NULL ? text : "",
@@ -659,6 +805,48 @@ static void LoadEntry(void)
     SyncListSelection();
 }
 
+/* Saves (or, if length is 0, deletes) the open entry on the server. If it
+   was changed on another computer since it was loaded, asks first. */
+static BOOL SaveServerEntry(const char *text, LONG length)
+{
+    char path[32], error[200];
+    const char *base = gEntryVersion;
+
+    strcpy(path, "/entries/");
+    MakeEntryName(gDay, path + strlen(path));
+    for (;;) {
+        HttpResponse response;
+        LONG status;
+
+        SetBusy(TRUE);
+        if (!HttpRequest("PUT", path, text, length, base, &response, error, sizeof(error))) {
+            SetBusy(FALSE);
+            ShowServerError("Diary couldn't save the entry on the Diary Server; "
+                            "your text is still in the window:", error);
+            return FALSE;
+        }
+        SetBusy(FALSE);
+        status = response.status;
+        if (status == 200)
+            strcpy(gEntryVersion, response.version);
+        else if (status != 409)
+            ShowServerError("The Diary Server refused to save the entry; "
+                            "your text is still in the window:",
+                            status == 403 ? "The server wants a different key." : response.body);
+        HttpFree(&response);
+
+        if (status == 200)
+            return TRUE;
+        if (status != 409)
+            return FALSE;
+        if (Ask("This entry was changed on another computer\n"
+                "since you opened it. Save your version over it?",
+                "Overwrite|Keep Editing") == 0)
+            return FALSE;
+        base = NULL;                /* replace it unconditionally */
+    }
+}
+
 static BOOL SaveEntry(void)
 {
     char path[64];
@@ -667,7 +855,7 @@ static BOOL SaveEntry(void)
 
     if (!EditorChanged())
         return TRUE;
-    if (!gHaveFolder) {
+    if (!gUseServer && !gHaveFolder) {
         ShowMessage("There is no \"Diary Entries\" drawer to save into.");
         return FALSE;
     }
@@ -681,6 +869,29 @@ static BOOL SaveEntry(void)
     length = strlen(text);
     while (length > 0 && text[length - 1] == '\n')
         length--;
+
+    if (gUseServer) {
+        BOOL ok = SaveServerEntry(text, length);
+
+        FreeVec(text);
+        if (!ok)
+            return FALSE;
+        if (length == 0) {
+            RemoveDay(&gAllDays, gDay);
+            RemoveDay(&gShownDays, gDay);
+            RefreshList();
+            UpdateCalendar();
+        } else if (FindDay(&gAllDays, gDay) < 0) {
+            InsertDay(&gAllDays, gDay);
+            if (gSearch[0] == 0)
+                InsertDay(&gShownDays, gDay);
+            RefreshList();
+            UpdateCalendar();
+        }
+        SetGadgetAttrs((struct Gadget *)gEditor, gWindow, NULL,
+                       GA_TEXTEDITOR_HasChanged, FALSE, TAG_DONE);
+        return TRUE;
+    }
 
     EntryPath(gDay, path);
     if (length == 0) {
@@ -757,6 +968,10 @@ static BOOL EntryContains(LONG day)
     char *text;
     BOOL found;
 
+    /* With a server, the listed days are its search result. */
+    if (gUseServer)
+        return FindDay(&gShownDays, day) >= 0;
+
     EntryPath(day, path);
     text = ReadTextFile(path, &length);
     if (text == NULL)
@@ -790,18 +1005,20 @@ static void ShowAllEntries(void)
     UpdateCalendar();
 }
 
-static BOOL AskForSearchText(char *text)
+/* Asks for a line of text, edited in place in buffer. */
+static BOOL AskString(const char *title, const char *body, const char *buttons,
+                      char *buffer, LONG maxChars)
 {
     Object *req;
     LONG result = 0;
 
     req = RequesterObject,
         REQ_Type, REQTYPE_STRING,
-        REQ_TitleText, "Find",
-        REQ_BodyText, "Find entries containing:",
-        REQ_GadgetText, "_Find|_Cancel",
-        REQS_Buffer, text,
-        REQS_MaxChars, kMaxSearch,
+        REQ_TitleText, title,
+        REQ_BodyText, body,
+        REQ_GadgetText, buttons,
+        REQS_Buffer, buffer,
+        REQS_MaxChars, maxChars,
         REQS_AllowEmpty, TRUE,
         End;
     if (req == NULL)
@@ -818,7 +1035,7 @@ static void DoFind(void)
     LONG i;
 
     strcpy(text, gSearch);
-    if (!AskForSearchText(text))
+    if (!AskString("Find", "Find entries containing:", "_Find|_Cancel", text, kMaxSearch))
         return;
     if (text[0] == 0) {
         ShowAllEntries();
@@ -830,9 +1047,33 @@ static void DoFind(void)
     SetBusy(TRUE);
     strcpy(previous, gSearch);
     strcpy(gSearch, text);
-    for (i = 0; i < gAllDays.count; i++)
-        if (EntryContains(gAllDays.days[i]))
-            InsertDay(&matches, gAllDays.days[i]);
+    if (gUseServer) {
+        char path[3 * kMaxSearch + 16], error[200];
+        HttpResponse response;
+
+        strcpy(path, "/search?q=");
+        NetEncode(text, path + strlen(path), sizeof(path) - strlen(path));
+        if (!HttpRequest("GET", path, NULL, 0, NULL, &response, error, sizeof(error))) {
+            SetBusy(FALSE);
+            strcpy(gSearch, previous);
+            ShowServerError("Diary couldn't search on the Diary Server:", error);
+            return;
+        }
+        if (response.status != 200) {
+            SetBusy(FALSE);
+            strcpy(gSearch, previous);
+            ShowServerError("The Diary Server refused the search:",
+                            response.status == 403 ? "The server wants a different key." : response.body);
+            HttpFree(&response);
+            return;
+        }
+        AddDaysFromReply(&matches, response.body);
+        HttpFree(&response);
+    } else {
+        for (i = 0; i < gAllDays.count; i++)
+            if (EntryContains(gAllDays.days[i]))
+                InsertDay(&matches, gAllDays.days[i]);
+    }
     SetBusy(FALSE);
 
     if (matches.count == 0) {
@@ -1131,8 +1372,8 @@ static BOOL CreateWindowObject(void)
     SetAttrs(gScroller, ICA_TARGET, gEditor, ICA_MAP, kScrollerToEditor, TAG_DONE);
 
     gWindowObj = WindowObject,
-        WA_Title, "Diary",
-        WA_ScreenTitle, "Diary 1.1",
+        WA_Title, gTitle,
+        WA_ScreenTitle, "Diary 1.2",
         WA_PubScreen, gScreen,
         WA_Activate, TRUE,
         WA_DragBar, TRUE,
@@ -1203,6 +1444,38 @@ static void ChooseFont(void)
     FreeAslRequest(fr);
 }
 
+/* Settings > Diary Server...: where the entries are kept. */
+static void ChooseServer(void)
+{
+    char server[sizeof(gServer)], key[sizeof(gServerKey)];
+
+    strcpy(server, gServer);
+    if (!AskString("Diary Server",
+                   "Keep the entries on a Diary Server at this address\n"
+                   "(host or host:port; leave it empty for the\n"
+                   "\"Diary Entries\" drawer):",
+                   "_OK|_Cancel", server, sizeof(server) - 1))
+        return;
+    strcpy(key, gServerKey);
+    if (server[0] != 0
+            && !AskString("Diary Server", "The server's key (leave it empty if it has none):",
+                          "_OK|_Cancel", key, sizeof(key) - 1))
+        return;
+    if (!SaveEntry())
+        return;
+
+    strcpy(gServer, server);
+    strcpy(gServerKey, server[0] != 0 ? key : "");
+    gUseServer = gServer[0] != 0;
+    NetSetServer(gServer, gServerKey);
+    SaveSettings();
+    UpdateTitle();
+
+    ScanEntries();
+    ShowAllEntries();
+    LoadEntry();
+}
+
 /* ---------- Commands ---------- */
 
 static BOOL DoQuit(void)
@@ -1236,6 +1509,7 @@ static BOOL DoCommand(ULONG command)
     case CMD_NEXTDAY:   OpenDay(gDay + 1); break;
     case CMD_TODAY:     OpenDay(Today()); break;
     case CMD_FONT:      ChooseFont(); break;
+    case CMD_SERVER:    ChooseServer(); break;
     }
     return FALSE;
 }
@@ -1379,6 +1653,9 @@ int main(void)
     FindEntriesFolder();
     LoadSettings();
     OpenTextFont();
+    gUseServer = gServer[0] != 0;
+    NetSetServer(gServer, gServerKey);
+    UpdateTitle();
     ScanEntries();
     CopyDays(&gShownDays, &gAllDays);
     gDay = Today();
@@ -1406,6 +1683,7 @@ int main(void)
 
 done:
     DisposeWindowObject();
+    NetCleanup();
     if (ListBrowserBase != NULL)
         FreeListBrowserList(&gListNodes);
     if (gTextFont != NULL)

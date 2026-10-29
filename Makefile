@@ -9,8 +9,8 @@ INSTALL_DIR ?= $(HOME)/Amiberry/HardDrives/Shared/Diary
 
 all: dist/Diary dist/Diary.info
 
-dist/Diary: diary.c | dist
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+dist/Diary: diary.c net.c net.h | dist
+	$(CC) $(CFLAGS) -o $@ diary.c net.c $(LDFLAGS)
 
 dist/Diary.info: tools/make_icon.py | dist
 	python3 tools/make_icon.py $@
