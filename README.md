@@ -5,6 +5,9 @@ It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retr
 (on 68k Macs and on PowerPC Macs up to a G4 with Mac OS 9.2.2),
 [Diary for Mac OS X](https://github.com/retrolemmy/Diary-MacOSX) and
 [Diary for Windows 98](https://github.com/retrolemmy/Diary-Win98).
+For MorphOS, and for Amigas with MUI but without OS 3.2, there's
+[Diary for MUI](https://github.com/retrolemmy/Diary-Amiga-MUI): the same program with a MUI window, which can share the
+"Diary Entries" drawer with this one.
 
 - One window: a month calendar and a list of all entries (newest first) on
   the left, the selected day on the right with `<`, `Today` and `>` buttons
