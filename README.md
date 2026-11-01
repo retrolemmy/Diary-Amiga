@@ -1,13 +1,16 @@
 # Diary for AmigaOS 3.2
 
-A simple one-page-per-day journal for 68k Amigas running AmigaOS 3.2.
+A simple one-page-per-day journal for 68k Amigas running AmigaOS 3.2,
+tested on an A4000, including the Diary Server connection.
 It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retrolemmy/Diary)
 (on 68k Macs and on PowerPC Macs up to a G4 with Mac OS 9.2.2),
 [Diary for Mac OS X](https://github.com/retrolemmy/Diary-MacOSX) and
 [Diary for Windows 98](https://github.com/retrolemmy/Diary-Win98).
 For MorphOS, and for Amigas with MUI but without OS 3.2, there's
-[Diary for MUI](https://github.com/retrolemmy/Diary-Amiga-MUI): the same program with a MUI window, which can share the
-"Diary Entries" drawer with this one.
+[Diary for MUI](https://github.com/retrolemmy/Diary-Amiga-MUI): the same
+program with a MUI window, which can share the "Diary Entries" drawer with
+this one. It's tested on a Mac mini G4 with MorphOS and on the same A4000
+with MUI.
 
 - One window: a month calendar and a list of all entries (newest first) on
   the left, the selected day on the right with `<`, `Today` and `>` buttons
