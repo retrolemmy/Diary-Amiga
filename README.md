@@ -4,8 +4,9 @@ A simple one-page-per-day journal for 68k Amigas running AmigaOS 3.2,
 tested on an A4000, including the Diary Server connection.
 It's the Amiga sibling of [Diary for the classic Mac OS](https://github.com/retrolemmy/Diary)
 (on 68k Macs and on PowerPC Macs up to a G4 with Mac OS 9.2.2),
-[Diary for Mac OS X](https://github.com/retrolemmy/Diary-MacOSX) and
-[Diary for Windows 98](https://github.com/retrolemmy/Diary-Win98).
+[Diary for Mac OS X](https://github.com/retrolemmy/Diary-MacOSX),
+[Diary for Windows 98](https://github.com/retrolemmy/Diary-Win98) and
+[Diary for Linux](https://github.com/retrolemmy/Diary-Linux) (tested on a Power Mac G5).
 For MorphOS, and for Amigas with MUI but without OS 3.2, there's
 [Diary for MUI](https://github.com/retrolemmy/Diary-Amiga-MUI): the same
 program with a MUI window, which can share the "Diary Entries" drawer with
@@ -96,6 +97,8 @@ also gives modern browsers a Diary web page:
   PowerPC and Intel Macs (tested on Leopard)
 - [Windows 98](https://github.com/retrolemmy/Diary-Win98) (tested on Windows 98
   and Windows 11)
+- [Linux with GTK 3](https://github.com/retrolemmy/Diary-Linux) (tested on a
+  Power Mac G5 with Gentoo Linux)
 - Modern browsers on computers, tablets and phones: the Diary Server's web page
   (tested in Chrome and Firefox)
 - [Diary Server](https://github.com/retrolemmy/Diary-Server) (tested on a
